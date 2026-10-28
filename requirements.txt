@@ -1,0 +1,5 @@
+python-chess
+numpy
+pytest
+# torch is installed separately (step 2): the CPU build on the work PC,
+# a CUDA 12.8+ build on the RTX 5060 machine.
