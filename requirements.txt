@@ -1,5 +1,7 @@
-python-chess
-numpy
-pytest
-# torch is installed separately (step 2): the CPU build on the work PC,
-# a CUDA 12.8+ build on the RTX 5060 machine.
+# Base dependencies, same on every machine. Install PyTorch separately:
+#   work PC (CPU):   pip install -r requirements-cpu.txt
+#   home PC (5060):  pip install -r requirements-gpu.txt
+chess>=1.11
+numpy>=2.0
+matplotlib>=3.9
+pytest>=8.0

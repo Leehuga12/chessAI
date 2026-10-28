@@ -1,0 +1,5 @@
+# PyTorch CPU build, for the work PC (no GPU). Install AFTER requirements.txt:
+#   pip install -r requirements.txt
+#   pip install -r requirements-cpu.txt
+--index-url https://download.pytorch.org/whl/cpu
+torch==2.14.1

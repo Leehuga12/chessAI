@@ -12,6 +12,10 @@ Not built yet: web UI. Search is batched (see below); the GPU speedup has not be
 
     python -m venv .venv
     .venv\Scripts\python -m pip install -r requirements.txt
+    .venv\Scripts\python -m pip install -r requirements-cpu.txt     # work PC
+    .venv\Scripts\python -m pip install -r requirements-gpu.txt     # home PC (RTX 5060)
+
+See `TODO.md` for project status and next steps.
 
 ## Test
 
@@ -28,8 +32,6 @@ Not built yet: web UI. Search is batched (see below); the GPU speedup has not be
     .venv\Scripts\python train.py --iterations 2 --games 2 --simulations 8 --train-steps 5 --arena-games 2
 
 Writes checkpoints (`best.pt`, `iter_NNN.pt`) and `train_log.csv` to `runs/<out-dir>`.
-Install torch with `pip install torch --index-url https://download.pytorch.org/whl/cpu` (work PC);
-on the RTX 5060 machine use a CUDA 12.8+ build instead.
 
 ## Evaluate and chart
 
