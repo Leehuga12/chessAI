@@ -18,11 +18,13 @@ import traceback
 from pathlib import Path
 
 import chess
+import chess.engine
 import numpy as np
 import torch
 
 from .arena import play_match
 from .encoding import encode_board
+from .evaluate import DEFAULT_ENGINE, STOCKFISH_NODES, StockfishOpponent
 from .mcts import Search, run_round
 from .moves import index_to_move
 from .network import ChessNet, load_checkpoint, save_checkpoint
@@ -38,16 +40,21 @@ CANDIDATES = 6
 RECENT_GAMES = 40    # results kept for the form strip
 SUMMARY_HOLD = 6.0   # seconds a finished Watch-mode game waits for the summary to be read, unless dismissed
 RESULT_TEXT = {1: "1-0", -1: "0-1", 0: "1/2-1/2"}
+SF_MIN_ELO, SF_MAX_ELO = 1320, 3190   # the range Stockfish accepts for UCI_Elo; the labels are nominal (fixed node budget)
+SF_ELO_CHOICES = [1320, 1500, 1700, 1900, 2100, 2300, 2500, 2700, 2900, 3190]   # strengths offered on the page (and rows of the results table)
+SF_TEMPERATURE_PLIES = 6   # against Stockfish the net samples its first few moves, so repeated games are not identical
 GROUP_PRETRAINED, GROUP_SELFPLAY, GROUP_BOTH = "Pretrained on strong games", "Self-play", "Pretrained, then improved by self-play"
 NET_GROUPS = (GROUP_PRETRAINED, GROUP_BOTH, GROUP_SELFPLAY)
 
-DEFAULTS = dict(mode="selfplay", speed=1, learning=False, paused=False, summary=True, opening="none", human_color="white", simulations=50,
+DEFAULTS = dict(mode="selfplay", speed=1, learning=False, paused=False, summary=True, opening="none",
+                opponent="self", sf_elo=1700, net_color="alternate", human_color="white", simulations=50,
                 train_steps=20, batch_size=64, lr=1e-3, arena_every=10, arena_games=6, gate=0.55)
 # name -> (cast, low, high) for numbers, or a tuple of allowed values
 LIMITS = dict(simulations=(int, 1, 2000), train_steps=(int, 1, 5000), batch_size=(int, 8, 4096),
               lr=(float, 1e-6, 1.0), arena_every=(int, 1, 1000), arena_games=(int, 2, 200),
               gate=(float, 0.0, 1.0), speed=(1, 4, 16, 64), mode=("selfplay", "play"),
-              human_color=("white", "black"))
+              human_color=("white", "black"), opponent=("self", "stockfish"), sf_elo=(int, SF_MIN_ELO, SF_MAX_ELO),
+              net_color=("white", "black", "alternate"))
 CURVE_FIELDS = ["iteration", "game", "loss", "policy_loss", "value_loss", "arena_score", "promoted"]
 
 
@@ -76,7 +83,7 @@ def validate(changes: dict) -> dict:
 
 class Live:
     def __init__(self, out_dir="runs/ui", blocks=6, channels=64, device=None, simulations=50, seed=0, init_from=None,
-                 runs_root=None, start_net=None, openings_dir=None):
+                 runs_root=None, start_net=None, openings_dir=None, engine_path=None):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.out = Path(out_dir)
         self.out.mkdir(parents=True, exist_ok=True)
@@ -89,6 +96,12 @@ class Live:
         self.session = int(self.t0)
         self.openings = Openings(openings_dir) if openings_dir else Openings()
         self._records = {}     # win/draw/loss record per net
+        self.engine_path = Path(engine_path) if engine_path else DEFAULT_ENGINE
+        self.stockfish_ok = self.engine_path.exists()
+        self._sf = None        # Stockfish, started on first use (worker thread only)
+        self._sf_elo = None
+        self._sf_games = 0     # games started against Stockfish in Watch mode, for alternating colours
+        self._human_vs_sf = {"elos": {}, "recent": []}   # your results against Stockfish (no net involved)
         self._net_cache = {}   # checkpoint peeks for the net picker
         self._nets = []        # last scan of the runs folder, served to the page
         self._scan_asked = 0.0
@@ -156,6 +169,13 @@ class Live:
             self.game_id += 1
             self.game_mode = self.settings["mode"]
             self.human = chess.WHITE if self.settings["human_color"] == "white" else chess.BLACK
+            self.game_opponent = self.settings["opponent"] if self.stockfish_ok else "self"
+            self.game_sf_elo = self.settings["sf_elo"]
+            self.net_white = None
+            if self.game_opponent == "stockfish" and self.game_mode == "selfplay":   # which colour the net plays
+                choice = self.settings["net_color"]
+                self.net_white = self._sf_games % 2 == 0 if choice == "alternate" else choice == "white"
+                self._sf_games += 1
             self.board = chess.Board()
             self.moves = []
             self.history = []
@@ -192,6 +212,18 @@ class Live:
             self.last_move = move.uci()
         self.opening = {"eco": entry["eco"], "name": entry["name"]}
 
+    def _players(self):
+        """Who plays each colour in the current game, for display."""
+        sf = f"Stockfish ~{self.game_sf_elo}"
+        if self.game_mode == "play":
+            other = sf if self.game_opponent == "stockfish" else self.net_name
+            white, black = ("You", other) if self.human == chess.WHITE else (other, "You")
+        elif self.game_opponent == "stockfish":
+            white, black = (self.net_name, sf) if self.net_white else (sf, self.net_name)
+        else:
+            white = black = self.net_name
+        return {"white": white, "black": black}
+
     def _opening_name(self, board):
         info = self.openings.name_for(board)
         return {"eco": info["eco"], "name": info["name"]} if info else None
@@ -208,14 +240,14 @@ class Live:
                       q=(-c.W / c.N if c.N else 0.0), prior=c.prior) for n, m, c in rows]
         return s.visits(), cands, float(value)
 
-    def _apply(self, move, searched=None):
-        """Play `move`. searched = (visits, candidates, value) when the AI chose it."""
+    def _apply(self, move, searched=None, by=None):
+        """Play `move`. searched = (visits, candidates, value) when the net chose it; by='stockfish' for the engine's moves."""
         with self.lock:
             board = self.board
             mover = board.turn
             before = board.copy()
             entry = dict(ply=board.ply() + 1, side="white" if mover else "black", san=board.san(move),
-                         uci=move.uci(), by="ai" if searched else "human", e=None, q=None,
+                         uci=move.uci(), by=by or ("ai" if searched else "human"), e=None, q=None,
                          share=None, drop=None)
             if searched:
                 visits, cands, value = searched
@@ -226,9 +258,10 @@ class Live:
                 self.candidates = cands
                 self.eval_white = value if mover == chess.WHITE else -value
                 nz = np.nonzero(visits)[0]
-                self.history.append((encode_board(before).astype(np.uint8), nz.astype(np.int16),
-                                     (visits[nz] / visits[nz].sum()).astype(np.float32), mover))
-            elif self.last_q is not None:
+                if self.game_opponent == "self":   # games against Stockfish are never used for training
+                        self.history.append((encode_board(before).astype(np.uint8), nz.astype(np.int16),
+                                         (visits[nz] / visits[nz].sum()).astype(np.float32), mover))
+            elif by is None and self.last_q is not None:
                 entry["e"] = -self.last_q   # value the AI's reply gave us, from the human's side
             prev = self.moves[-1] if self.moves else None
             if prev and prev["e"] is not None and entry["e"] is not None:
@@ -258,12 +291,15 @@ class Live:
             self.reason = outcome.termination.name.replace("_", " ").lower() if outcome else "move limit reached"
             game = dict(id=self.game_id, session=self.session, mode=self.game_mode, result=self.result,
                         plies=len(self.moves), mistakes=dict(self.mistakes),
-                        human="white" if self.human == chess.WHITE else "black", net=self.net_key, opening=self.opening, moves=self.moves)
+                        human="white" if self.human == chess.WHITE else "black", net=self.net_key, opening=self.opening,
+                        opponent=self.game_opponent, sf_elo=self.game_sf_elo, net_white=self.net_white, players=self._players(),
+                        moves=self.moves)
             self.games.append(game)
             with open(self.out / "games.jsonl", "a", encoding="utf-8") as f:
                 f.write(json.dumps(game) + "\n")
-            self._tally(self.game_mode, self.result, game["human"])
-            learn = self.game_mode == "selfplay" and self.settings["learning"]
+            self._tally(self.game_mode, self.result, game["human"], opponent=self.game_opponent, sf_elo=self.game_sf_elo,
+                        net_white=self.net_white)
+            learn = self.game_mode == "selfplay" and self.settings["learning"] and self.game_opponent == "self"
             self.status = "game over"
         if learn:
             self.buffer.add(_to_samples(result, self.history))
@@ -325,7 +361,10 @@ class Live:
         with self.lock:
             if clean.get("opening", "none") not in ("none", "random") and not self.openings.lookup(clean["opening"]):
                 raise ValueError("unknown opening")
-            restart = any(k in clean and clean[k] != self.settings[k] for k in ("mode", "human_color", "opening"))
+            if clean.get("opponent") == "stockfish" and not self.stockfish_ok:
+                raise ValueError("Stockfish was not found (expected at tools/stockfish)")
+            restart = any(k in clean and clean[k] != self.settings[k]
+                          for k in ("mode", "human_color", "opening", "opponent", "sf_elo", "net_color"))
             self.settings.update(clean)
         if restart:
             self.cmds.put({"type": "new_game"})
@@ -368,7 +407,8 @@ class Live:
     def _rec(self, key):
         return self._records.setdefault(key, {"counts": {"play": {"win": 0, "draw": 0, "loss": 0},
                                                          "selfplay": {"white": 0, "draw": 0, "black": 0}},
-                                              "recent": {"play": [], "selfplay": []}})
+                                              "recent": {"play": [], "selfplay": []},
+                                              "vs_sf": {"elos": {}, "recent": []}})   # this net against Stockfish, by Elo
 
     @property
     def counts(self):
@@ -378,8 +418,18 @@ class Live:
     def recent(self):
         return self._rec(self.net_key)["recent"]
 
-    def _tally(self, mode, result, human, key=None):
-        """Count a finished game. Play mode is from the human's side; Watch mode is White / Black."""
+    def _tally(self, mode, result, human, key=None, opponent="self", sf_elo=None, net_white=None):
+        """Count a finished game. Play mode is from the human's side; Watch mode is White / Black.
+        Against Stockfish: your result in Play mode, the net's result in Watch mode, kept per Elo."""
+        if opponent == "stockfish":
+            white_won = result == "1-0"
+            mine_is_white = (human == "white") if mode == "play" else bool(net_white)
+            outcome = "draw" if result == "1/2-1/2" else ("win" if white_won == mine_is_white else "loss")
+            rec = self._human_vs_sf if mode == "play" else self._rec(key or self.net_key)["vs_sf"]
+            row = rec["elos"].setdefault(str(sf_elo), {"win": 0, "draw": 0, "loss": 0})
+            row[outcome] += 1
+            rec["recent"] = (rec["recent"] + [outcome])[-RECENT_GAMES:]
+            return
         if mode == "play":
             outcome = "draw" if result == "1/2-1/2" else ("win" if (result == "1-0") == (human == "white") else "loss")
         else:
@@ -398,7 +448,8 @@ class Live:
             for line in f:
                 try:
                     g = json.loads(line)
-                    self._tally(g["mode"], g["result"], g.get("human", "white"), g.get("net", default_key))
+                    self._tally(g["mode"], g["result"], g.get("human", "white"), g.get("net", default_key),
+                                opponent=g.get("opponent", "self"), sf_elo=g.get("sf_elo"), net_white=g.get("net_white"))
                 except (ValueError, KeyError):
                     continue   # a damaged line should not stop the page from starting
 
@@ -516,6 +567,60 @@ class Live:
         with self.lock:
             self.ack = True
 
+    # ---- Stockfish as an opponent ---------------------------------------------------------------
+    def _sf_move(self, board):
+        """Stockfish's move at the current Elo setting, with the same fixed node budget the evaluation harness uses."""
+        for attempt in (1, 2):
+            if self._sf is None or self._sf_elo != self.game_sf_elo:
+                self._close_sf()
+                self._sf = StockfishOpponent(self.engine_path, elo=self.game_sf_elo, nodes=STOCKFISH_NODES)
+                self._sf_elo = self.game_sf_elo
+            try:
+                return self._sf.move(board)
+            except chess.engine.EngineError:   # the engine died: start a fresh one once
+                self._close_sf()
+                if attempt == 2:
+                    raise
+
+    def _close_sf(self):
+        if self._sf is not None:
+            try:
+                self._sf.close()
+            except Exception:
+                pass
+            self._sf = None
+
+    def close(self):
+        self._close_sf()
+
+    def _step_stockfish(self, mode, result, turn, human, speed, paused):
+        if mode == "selfplay":   # watch the net play Stockfish
+            if paused:
+                return 0.1
+            delay = 1.0 / speed
+            if result:
+                if self._summary_hold() > 0:
+                    return 0.1
+                self.new_game()
+                return delay
+            t = time.time()
+            if (turn == chess.WHITE) == bool(self.net_white):
+                searched = self._think(self.board, noise=False)
+                idx = pick_move(searched[0], self.board.ply(), self.rng, SF_TEMPERATURE_PLIES)
+                self._apply(index_to_move(idx, self.board), searched)
+            else:
+                self._apply(self._sf_move(self.board), by="stockfish")
+            return max(0.0, delay - (time.time() - t))
+        if result or turn == human:   # you play Stockfish; the net is not used at all
+            return 0.1
+        with self.lock:
+            self.status = "thinking"
+        self._apply(self._sf_move(self.board), by="stockfish")
+        with self.lock:
+            if not self.result:
+                self.status = "your move"
+        return 0.0
+
     # ---- worker -------------------------------------------------------------------------------
     def _step(self):
         """Advance one move if there is something to do. Returns seconds to wait afterwards."""
@@ -523,6 +628,9 @@ class Live:
             mode, result, turn, human = self.game_mode, self.result, self.board.turn, self.human
             speed, learning = self.settings["speed"], self.settings["learning"]
             paused = self.settings["paused"]
+            opponent = self.game_opponent
+        if opponent == "stockfish":
+            return self._step_stockfish(mode, result, turn, human, speed, paused)
         if mode == "selfplay":
             if paused:
                 return 0.1
@@ -568,13 +676,20 @@ class Live:
 
     # ---- read side ----------------------------------------------------------------------------
     def state(self, stockfish_csv="results/results.csv"):
+        sf_rows = read_stockfish(stockfish_csv)
         with self.lock:
             board, s = self.board, self.settings
             legal = {}
             if self.game_mode == "play" and not self.result and board.turn == self.human:
                 for m in board.legal_moves:
                     legal.setdefault(chess.square_name(m.from_square), []).append(chess.square_name(m.to_square))
-            if self.game_mode == "play":
+            if self.game_opponent == "stockfish":
+                rec = self._human_vs_sf if self.game_mode == "play" else self._rec(self.net_key)["vs_sf"]
+                row = rec["elos"].get(str(self.game_sf_elo), {"win": 0, "draw": 0, "loss": 0})
+                games = sum(row.values())
+                win_pct = 100 * row["win"] / games if games else None
+                win_label = ("you vs SF " if self.game_mode == "play" else "net vs SF ") + str(self.game_sf_elo)
+            elif self.game_mode == "play":
                 c = self.counts["play"]
                 games = sum(c.values())
                 win_pct, win_label = (100 * c["loss"] / games if games else None), "AI vs you"   # your losses are the AI's wins
@@ -587,6 +702,7 @@ class Live:
                 game=dict(id=self.game_id, mode=self.game_mode, fen=board.fen(), last=self.last_move,
                           turn="white" if board.turn else "black", ply=board.ply(), result=self.result, reason=self.reason, opening=self.opening,
                           hold_left=(self._summary_hold() if self.game_mode == "selfplay" else 0.0),
+                          opponent=self.game_opponent, sf_elo=self.game_sf_elo, net_white=self.net_white, players=self._players(),
                           moves=list(self.moves), mistakes=dict(self.mistakes),
                           human="white" if self.human == chess.WHITE else "black"),
                 candidates=list(self.candidates), eval_white=self.eval_white, legal=legal,
@@ -595,11 +711,14 @@ class Live:
                 info=dict(device=self.device, blocks=self.net.config["blocks"], channels=self.net.config["channels"],
                           params=self.params, buffer=len(self.buffer), leaves=LEAVES, promotions=self.promotions,
                           games_played=len(self.games), mistake_drop=MISTAKE_DROP),
-                record=dict(counts={k: dict(v) for k, v in self.counts.items()}, recent={k: list(v) for k, v in self.recent.items()}),
+                record=dict(counts={k: dict(v) for k, v in self.counts.items()}, recent={k: list(v) for k, v in self.recent.items()},
+                            vs_stockfish=copy.deepcopy(self._rec(self.net_key)["vs_sf"]), human_vs_stockfish=copy.deepcopy(self._human_vs_sf)),
+                engine=dict(available=self.stockfish_ok, min=SF_MIN_ELO, max=SF_MAX_ELO, nodes=STOCKFISH_NODES,
+                            elos=SF_ELO_CHOICES),
                 net=dict(name=self.net_name, source=self.source_label, key=self.net_key),
                 curve=list(self.curve[-500:]),
                 games=[{k: g[k] for k in ("id", "mode", "result", "plies", "mistakes")} for g in self.games],
-                stockfish=read_stockfish(stockfish_csv),
+                stockfish=sf_rows,
             )
 
     def game_moves(self, game_id):
@@ -634,14 +753,18 @@ class Live:
 
 
 def read_stockfish(path):
-    """Latest row per (opponent, checkpoint) from the evaluate.py results file, if there is one."""
+    """Latest row per (opponent, checkpoint) from the evaluate.py results file, if there is one.
+    Only the Stockfish-Elo opponents are listed (not 'random' or 'sf-skill0'); the file itself keeps everything."""
     p = Path(path)
     if not p.exists():
         return []
     latest = {}
     with open(p, newline="") as f:
         for row in csv.DictReader(f):
+            if not row["opponent"].startswith("sf-elo"):
+                continue
             latest[(row["opponent"], row["checkpoint"])] = dict(
                 opponent=row["opponent"], checkpoint=f"{Path(row['checkpoint'].replace(chr(92), '/')).parent.name}/{Path(row['checkpoint'].replace(chr(92), '/')).stem}", iteration=row["iteration"],
-                score=row["score"], est_elo=row["est_elo"], margin=row["elo_margin"], games=row["games"])
+                score=row["score"], est_elo=row["est_elo"], margin=row["elo_margin"], games=row["games"],
+                sims=row.get("simulations", ""))
     return list(latest.values())

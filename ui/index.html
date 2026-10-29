@@ -138,7 +138,8 @@
       <div class="board-wrap">
         <div class="board" id="board"></div>
         <div class="summary" id="summary"></div>
-        <div class="banner" id="openingName" style="margin-top: 8px; min-height: 0"></div>
+        <div class="banner" id="playersLine" style="margin-top: 8px; min-height: 0"></div>
+        <div class="banner" id="openingName" style="margin-top: 4px; min-height: 0"></div>
         <div class="banner" id="banner"></div>
       </div>
     </section>
@@ -150,6 +151,10 @@
           <button data-mode="selfplay">Watch</button><button data-mode="play">Play</button></div>
         <div class="group" id="colorGroup"><span class="lbl">You are</span>
           <button data-color="white">White</button><button data-color="black">Black</button></div>
+        <div class="group" id="oppGroup"><span class="lbl" id="oppLbl">Opponent</span>
+          <select id="oppSel" title="Who plays against the net (Watch) or against you (Play). Games against Stockfish are never used for training."><option value="self"></option><option value="stockfish">Stockfish</option></select>
+          <select id="eloSel" title="Stockfish strength. These are nominal Elo labels: Stockfish searches a fixed 2,000-node budget, so they are not human ratings."></select>
+          <select id="netColorSel" title="Which colour your net plays against Stockfish"><option value="alternate">Net alternates colours</option><option value="white">Net plays White</option><option value="black">Net plays Black</option></select></div>
         <div class="group" id="speedGroup"><span class="lbl">Speed</span>
           <button data-speed="1">x1</button><button data-speed="4">x4</button>
           <button data-speed="16">x16</button><button data-speed="64">x64</button></div>
@@ -190,7 +195,7 @@
           <label for="s_gate">Score needed to replace best net</label><input id="s_gate" type="number" min="0" max="1" step="0.05">
           <div class="sect">Fixed for this run</div>
           <div id="ro" style="display:contents"></div>
-          <div class="hint">Learning only happens in Watch mode. In Play mode the net just plays you.</div>
+          <div class="hint">Learning only happens in Watch mode, from the net's own games. Games against Stockfish never train the net.</div>
         </div>
       </div>
       <div class="pane" id="pane-log">
@@ -364,7 +369,10 @@ function drawSummary() {
   const won = (g.human === "white" && wWin) || (g.human === "black" && bWin);
   let title, cls;
   if (play) { title = draw ? "Draw" : won ? "Victory" : "Defeat"; cls = draw ? "draw" : won ? "win" : "loss"; }
-  else { title = draw ? "Draw" : wWin ? "White wins" : "Black wins"; cls = draw ? "draw" : "win"; }
+  else if (g.opponent === "stockfish") {
+    const netWon = (wWin && g.net_white) || (bWin && !g.net_white);
+    title = draw ? "Draw" : (wWin ? g.players.white : g.players.black) + " wins"; cls = draw ? "draw" : netWon ? "win" : "loss";
+  } else { title = draw ? "Draw" : wWin ? "White wins" : "Black wins"; cls = draw ? "draw" : "win"; }
   const reason = g.reason ? g.reason.charAt(0).toUpperCase() + g.reason.slice(1) : "";
   const sub = draw ? "Drawn: " + (g.reason || "") : `${wWin ? "White" : "Black"} won by ${g.reason}`;
   const caps = { white: 0, black: 0 }; g.moves.forEach((m) => { if (m.san.includes("x")) caps[m.side]++; });
@@ -511,6 +519,33 @@ $("netSel").addEventListener("change", async (e) => {
   logCache = {}; dismissed = null;
 });
 
+/* ---------- opponent: the net itself, or Stockfish ---------- */
+$("oppSel").addEventListener("change", (e) => setSetting({ opponent: e.target.value }));
+$("eloSel").addEventListener("change", (e) => setSetting({ sf_elo: +e.target.value }));
+$("netColorSel").addEventListener("change", (e) => setSetting({ net_color: e.target.value }));
+function drawOpponent() {
+  const s = S.settings, g = S.game, play = g.mode === "play", eng = S.engine;
+  const oppSel = $("oppSel"), eloSel = $("eloSel"), ncSel = $("netColorSel");
+  $("oppLbl").textContent = play ? "Play against" : "Opponent";
+  oppSel.options[0].textContent = play ? "The net" : "The net itself";
+  oppSel.options[1].textContent = eng.available ? "Stockfish" : "Stockfish (not found)";
+  oppSel.options[1].disabled = !eng.available;
+  // only the strengths that appear in the Stockfish results table (plus the current setting, so the box is never blank)
+  const elos = [...new Set([...eng.elos, s.sf_elo])].sort((a, b) => a - b);
+  if (eloSel.dataset.sig !== elos.join(",")) {
+    eloSel.replaceChildren(...elos.map((e) => { const o = document.createElement("option"); o.value = e; o.textContent = "~" + e + " Elo"; return o; }));
+    eloSel.dataset.sig = elos.join(",");
+  }
+  if (document.activeElement !== oppSel) oppSel.value = s.opponent;
+  if (document.activeElement !== eloSel) eloSel.value = s.sf_elo;
+  if (document.activeElement !== ncSel) ncSel.value = s.net_color;
+  const sf = s.opponent === "stockfish";
+  eloSel.style.display = sf ? "" : "none";
+  ncSel.style.display = sf && !play ? "" : "none";
+  $("playersLine").innerHTML = g.opponent === "stockfish"
+    ? `<span class="muted">White</span> ${esc(g.players.white)} &nbsp;&middot;&nbsp; <span class="muted">Black</span> ${esc(g.players.black)}` : "";
+}
+
 /* ---------- win / draw / loss record ---------- */
 function drawRecord() {
   const R = S.record, play = S.game.mode === "play";
@@ -527,6 +562,17 @@ function drawRecord() {
         R.recent.play, pt ? ` · you win ${Math.round((100 * p.win) / pt)}%` : "") +
     row("AI self-play", !play, [{ n: s.white, label: "White wins", c: "" }, { n: s.draw, label: "draws", c: "c-draw" }, { n: s.black, label: "Black wins", c: "" }],
         R.recent.selfplay, "");
+  const sfRow = (title, rec, active) => {
+    const elos = Object.keys(rec.elos).map(Number).sort((a, b) => a - b);
+    if (!elos.length) return "";
+    const lines = elos.map((e) => { const r = rec.elos[e], n = r.win + r.draw + r.loss;
+      return `<div class="n"><b>~${e}</b><span><span class="c-win">${r.win}W</span> &middot; <span class="c-draw">${r.draw}D</span> &middot; <span class="c-loss">${r.loss}L</span> (${n})</span></div>`; }).join("");
+    return `<div class="rec-row${active ? " active" : ""}"><div class="title"><span>${title}</span><span>by Stockfish Elo setting (nominal)</span></div>
+      <div class="nums">${lines}</div><div class="strip" title="Most recent games, oldest on the left">${rec.recent.map((k) => `<i class="k-${k}"></i>`).join("")}</div></div>`;
+  };
+  const sfGame = S.game.opponent === "stockfish";
+  $("rec").innerHTML += sfRow("Net vs Stockfish (the net's results)", R.vs_stockfish, sfGame && !play) +
+                        sfRow("You vs Stockfish (your results)", R.human_vs_stockfish, sfGame && play);
 }
 
 /* ---------- panes ---------- */
@@ -624,8 +670,10 @@ function drawStockfish() {
   const rows = S.stockfish, el = $("sf");
   if (!rows.length) { el.textContent = "No Stockfish results yet. Run evaluate.py on a saved checkpoint (runs/ui/best.pt or latest.pt); results appear here."; return; }
   const elo = (r) => (r.est_elo ? `~${Math.round(r.est_elo)}${r.margin ? " ±" + r.margin : ""}` : "-");
-  el.innerHTML = `<table><tr><th>Opponent</th><th>Net</th><th class="num">Games</th><th class="num">Score</th><th class="num">Est. Elo</th></tr>` +
-    rows.map((r) => `<tr><td>${r.opponent}</td><td>${r.checkpoint}</td><td class="num">${r.games}</td><td class="num">${(r.score * 100).toFixed(0)}%</td><td class="num">${elo(r)}</td></tr>`).join("") +
+  const order = [...new Set(rows.map((r) => r.checkpoint))], strength = (r) => +r.opponent.replace("sf-elo", "");
+  const sorted = [...rows].sort((a, b) => order.indexOf(a.checkpoint) - order.indexOf(b.checkpoint) || strength(a) - strength(b));   // by net, then by strength
+  el.innerHTML = `<table><tr><th>Opponent</th><th>Net</th><th class="num" title="Search simulations per move the net used in that test">Sims</th><th class="num">Games</th><th class="num">Score</th><th class="num">Est. Elo</th></tr>` +
+    sorted.map((r) => `<tr><td>${r.opponent}</td><td>${r.checkpoint}</td><td class="num">${r.sims}</td><td class="num">${r.games}</td><td class="num">${(r.score * 100).toFixed(0)}%</td><td class="num">${elo(r)}</td></tr>`).join("") +
     `</table><div style="margin-top:6px">From results/results.csv. Score counts wins as 1 and draws as 0.5; with few games the margin is large.</div>`;
 }
 
@@ -633,7 +681,9 @@ function drawStockfish() {
 function render() {
   if (!S) return;
   const g = S.game, s = S.settings, play = g.mode === "play";
-  $("status").innerHTML = `${esc(S.net.name)} &middot; Game ${g.id} &middot; ${play ? "you vs AI" : "AI vs AI"} &middot; <b>${S.status}</b>`;
+  const sfGame = g.opponent === "stockfish";
+  const vsText = play ? (sfGame ? `you vs Stockfish ~${g.sf_elo}` : "you vs AI") : (sfGame ? `net vs Stockfish ~${g.sf_elo}` : "AI vs AI");
+  $("status").innerHTML = `${esc(S.net.name)} &middot; Game ${g.id} &middot; ${vsText} &middot; <b>${S.status}</b>`;
   document.querySelectorAll("[data-mode]").forEach((b) => b.classList.toggle("on", b.dataset.mode === s.mode));
   document.querySelectorAll("[data-color]").forEach((b) => b.classList.toggle("on", b.dataset.color === s.human_color));
   document.querySelectorAll("[data-speed]").forEach((b) => { b.classList.toggle("on", +b.dataset.speed === s.speed); b.disabled = play; });
@@ -641,15 +691,15 @@ function render() {
   const L = $("learn"); L.textContent = "Learning " + (s.learning ? "ON" : "OFF"); L.classList.toggle("on", s.learning); L.disabled = play;
   const SB = $("sumBtn"); SB.textContent = "Summary " + (s.summary ? "ON" : "OFF"); SB.classList.toggle("on", s.summary);
   $("speedGroup").title = play ? "Speed applies to Watch mode" : "";
-  L.title = play ? "Learning happens in Watch mode" : "";
-  $("kWin").textContent = "% of game wins"; $("kWin").title = S.stats.win_label === "arena" ? "Latest gating match: score of the new net against the best net" : "Share of finished games the AI won against you";
+  L.title = play ? "Learning happens in Watch mode" : sfGame ? "Games against Stockfish are never used for training" : "";
+  $("kWin").textContent = "% of game wins"; $("kWin").title = S.stats.win_label === "arena" ? "Latest gating match: score of the new net against the best net" : S.stats.win_label.includes("SF") ? "Share of games won against Stockfish at this Elo setting" : "Share of finished games the AI won against you";
   $("vWin").innerHTML = S.stats.win_pct == null ? "-" : S.stats.win_pct.toFixed(0) + '% <small class="muted" style="font-size:11px;font-weight:400">' + S.stats.win_label + "</small>";
   $("vMis").textContent = `${S.stats.mistakes.white} / ${S.stats.mistakes.black}`;
   $("kMis").title = `A move counts as a mistake when the net's value estimate for the mover drops by more than ${S.info.mistake_drop} (scale -1..1).`;
   $("vMoves").textContent = S.stats.moves; $("vTime").textContent = S.stats.runtime;
   let msg = "";
   if (g.result) msg = `Game over: <b>${g.result}</b> (${g.reason}). ` + (play ? "Press <b>New Game</b> to play again." : "Next game starts shortly.");
-  else if (play) msg = g.turn === g.human ? "<b>Your move</b>" : "AI is thinking...";
+  else if (play) msg = g.turn === g.human ? "<b>Your move</b>" : (sfGame ? "Stockfish is thinking..." : "AI is thinking...");
   else msg = `${g.turn === "white" ? "White" : "Black"} to move`;
   const paused = s.paused && !play;
   $("banner").innerHTML = msg;
@@ -661,6 +711,7 @@ function render() {
   drawRecord();
   drawNetSelect();
   drawOpeningName();
+  drawOpponent();
   if (activeTab === "cand") drawCandidates();
   if (activeTab === "settings") drawSettings();
   if (activeTab === "log") drawLog();

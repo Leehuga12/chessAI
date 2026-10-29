@@ -101,6 +101,18 @@ newest first. Picking one loads it as the playing net, in Watch or Play mode, wi
 - Its win/draw/loss record and learning curve are its own; switching back restores the other net's. Picking a net you used before carries on from its branch.
 - The replay buffer starts empty on each switch (it holds games from a different net). Only files under `runs/` can be loaded.
 
+## Opponents: the net itself, or Stockfish
+
+The **Opponent** control (next to Opening) chooses who plays:
+
+- **Watch mode:** *The net itself* (self-play, as before) or *Stockfish* at a chosen strength. Against Stockfish you also choose which colour the net plays
+  (it alternates by default). The header, the line under the board and the **Record** card show the games per Stockfish setting, from the net's side.
+- **Play mode:** *The net* or *Stockfish*. Against Stockfish the net is not used at all; your results are kept per Stockfish setting too.
+
+The Elo values (about 1320 to 3190, Stockfish's own range) are nominal: Stockfish searches a fixed 2,000-node budget (the same as `evaluate.py`), so they are labels for comparison,
+not human ratings. The net samples its first 6 moves against Stockfish so repeated games differ. **Games against Stockfish are never used for training**, even with Learning on;
+this first version is for watching, practising and testing. Needs Stockfish in `tools/stockfish` (the option is disabled with "not found" otherwise).
+
 ## Openings
 
 The UI names the opening as the game is played (shown under the board, and in the game summary), using the Lichess opening list

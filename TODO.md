@@ -34,6 +34,8 @@ Stockfish as a teacher (labelling positions) is an optional upgrade that needs a
       ~16 distinct games per 40 because of 8 fixed openings).
 - [ ] Next: all 3.8M games (about 5x more data; needs `consolidate_data.py` data on disk, ~50 GB), a bigger net (12x128 or 15x192), more epochs; revisit self-play only
       with far more games, mixed-in strong-game data and a low lr
+- [x] UI opponents (2026-10-29): watch the net play Stockfish at a chosen Elo and play Stockfish yourself; games against Stockfish never train the net. Idea not built: train the net
+      against the closest Elo, or use Stockfish as a teacher (labelling positions, needs the owner's explicit yes); expected gain small at ~1,000x less data per hour than supervised training.
 - [ ] Raise play-time simulations in the UI (the net plays noticeably stronger with more search)
 
 ## Conventions

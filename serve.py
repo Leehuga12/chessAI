@@ -109,6 +109,8 @@ def main():
         live.run()   # the main thread runs the GPU work (see chessai/live.py)
     except KeyboardInterrupt:
         pass
+    finally:
+        live.close()   # stop Stockfish if it was started
 
 
 if __name__ == "__main__":
