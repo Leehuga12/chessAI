@@ -12,6 +12,30 @@ Goal and constraints live in `PROJECT_BRIEF.md`. How to run things lives in `REA
 - Search speed on the work PC CPU: about 1,000 simulations/sec (was 230). GPU speed is unmeasured.
 - Repo: https://github.com/Leehuga12/chessAI (branch `main`). Commits use a noreply author identity set locally.
 
+## Direction change (2026-10-29)
+
+Goal confirmed with the owner: beat high-rated players/bots. Pure self-play on one GPU will not get there, so the plan is
+supervised warm start from strong games (Lichess Elite database or similar) -> self-play refinement -> more search at play time.
+Stockfish as a teacher (labelling positions) is an optional upgrade that needs an explicit yes from the owner (the brief says not otherwise).
+
+- [x] Data pipeline (`prepare_data.py`) and pretraining (`pretrain.py`), tested on synthetic games; `--init-from` in `train.py` and `serve.py`
+- [ ] Owner picks and downloads one month of strong games (ask before any large download; check the file size first)
+- [ ] Run `prepare_data.py` then `pretrain.py` on it; evaluate `pretrained.pt` with `evaluate.py` against the untrained control and Stockfish rungs
+- [ ] If the warm start helps: larger net, more months of data, then self-play from it (step 4 below, with `--init-from`)
+- [x] Warm start measured (2026-10-29): 1 month of Lichess Elite (16M positions, 6x64 net, 3 epochs, 17 min): 48% top-1 / 77% top-3 move match on held-out
+      games; roughly even with Stockfish "1700" (nominal) at 50 simulations. Self-play-only net: 0% against Stockfish 1320.
+- [x] Self-play fine-tuning of the pretrained net does NOT help yet (15 iterations x 32 games, 100 simulations, gate 20 games): lr 1e-3 is harmful (mean arena
+      0.31, 0 promotions); lr 1e-4 and 1e-5 stay level (mean arena 0.49 / 0.48, 3-4 promotions that are within chance). Head-to-head, 100 games vs the original:
+      lr 1e-4 48.0% (95% interval 40.7 to 55.3), lr 1e-5 45.0% (37.0 to 53.0): no measurable gain. Too little self-play data/search to move a pretrained net.
+- [x] Scaled supervised warm start (2026-10-29): 15 months of Lichess Elite (899k games, 72.7M training positions, 50k games/month cap except Dec 2019),
+      10 blocks x 128 channels (3.1M params), bf16, batch 1024, 3 epochs, 150 min (`runs/pretrain_big/pretrained.pt`). Held-out move match: 55.5% top-1, 83.6% top-3
+      (small net: 48.3 / 77.5 on a different, December-only validation set). Head-to-head vs the small pretrained net, 100 games: 82.0% (95% interval 75.4 to 88.6).
+      Stockfish (nominal Elo, 2000 nodes, 40 games, 50 simulations): 1700 -> 80%, 1900 -> 74%, 2100 -> 59% (est. ~1930 / 2070 / 2160, margins 110-170, optimistic: only
+      ~16 distinct games per 40 because of 8 fixed openings).
+- [ ] Next: all 3.8M games (about 5x more data; needs `consolidate_data.py` data on disk, ~50 GB), a bigger net (12x128 or 15x192), more epochs; revisit self-play only
+      with far more games, mixed-in strong-game data and a low lr
+- [ ] Raise play-time simulations in the UI (the net plays noticeably stronger with more search)
+
 ## Conventions
 
 - Run Python through the venv: `.venv\Scripts\python` (Windows).
@@ -25,23 +49,23 @@ Goal and constraints live in `PROJECT_BRIEF.md`. How to run things lives in `REA
 ## Next steps (in order)
 
 ### 1. Set up the home PC (owner does most of this)
-- [ ] `git clone https://github.com/Leehuga12/chessAI.git`
-- [ ] Create venv, then `pip install -r requirements.txt` and `pip install -r requirements-gpu.txt`
-- [ ] Download Stockfish as described above
-- [ ] Check CUDA: `python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"` must print True and the 5060
-- [ ] Run the tests; all should pass
+- [x] `git clone https://github.com/Leehuga12/chessAI.git`
+- [x] Create venv, then `pip install -r requirements.txt` and `pip install -r requirements-gpu.txt`
+- [x] Download Stockfish as described above
+- [x] Check CUDA: `python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"` must print True and the 5060
+- [x] Run the tests; all should pass
 - Done when: tests pass and `train.py` prints `device=cuda`.
 
 ### 2. Add `benchmark.py` and measure GPU speed
-- [ ] Add a committed `benchmark.py` (the scratch scripts used earlier are not in the repo): simulations/sec for a single search at
+- [x] Add a committed `benchmark.py` (the scratch scripts used earlier are not in the repo): simulations/sec for a single search at
       leaves 1/8/32, and parallel self-play at parallel 8/16/32/64, for a given `--blocks --channels`
-- [ ] Run it on the 5060, record the numbers in `README.md` under Speed, pick the best `--parallel` and `--leaves`
+- [x] Run it on the 5060, record the numbers in `README.md` under Speed, pick the best `--parallel` and `--leaves`
 - Done when: GPU numbers are in the README. Expect Python move generation to become the limit; if so, consider multiple
   self-play processes feeding one GPU, or moving encoding to vectorised code.
 
 ### 3. Add checkpoint resume to `train.py`
-- [ ] `--resume <dir>`: reload best/candidate net, optimizer, iteration counter, and append to the existing `train_log.csv`
-- [ ] Save the replay buffer periodically (or accept restarting with an empty one and say so)
+- [x] `--resume <dir>`: reload best/candidate net, optimizer, iteration counter, and append to the existing `train_log.csv`
+- [x] Save the replay buffer periodically (or accept restarting with an empty one and say so)
 - Needed before any run that takes more than a few hours.
 
 ### 4. First real training run
@@ -58,7 +82,7 @@ Goal and constraints live in `PROJECT_BRIEF.md`. How to run things lives in `REA
 - [ ] Run `plot_results.py` to make `results/improvement.png`.
 - [ ] Optional: make `evaluate()` play games in parallel (it is serial and will be the slow part).
 
-### 6. Local web UI (Pong-in-a-dish style)
+### 6. Local web UI (Pong-in-a-dish style) - first version built, see README
 - [ ] Small local server (FastAPI or Flask) plus one HTML page, no build step
 - [ ] Board you can play against the model on (use `python-chess` for legality; the owner does not know the rules)
 - [ ] Controls: speed (1x/4x/16x/64x) for watching self-play, Learning on/off toggle, New model button
@@ -72,6 +96,11 @@ Goal and constraints live in `PROJECT_BRIEF.md`. How to run things lives in `REA
 ### Optional, only if asked
 - [ ] Stage 2: supervised warm start from Lichess games (needs a large download: ask first)
 - [ ] Stage 4: "dish-style" outcome-only experiment, compared honestly against self-play
+
+## Memory note (Windows)
+
+The memory a program may reserve is capped at RAM + page file (here 32.6 GB + 2 GB). Loading 10.7 GB of data into RAM failed once even with 17 GB free, because
+other programs had reserved the rest. `consolidate_data.py` writes flat files that `pretrain.py` maps read-only from disk (not counted against the cap).
 
 ## Known limitations (be honest about these in any report)
 

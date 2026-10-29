@@ -12,3 +12,12 @@ tools/stockfish/
 
 # local Claude Code settings
 .claude/
+
+# prepared training data
+/data/
+
+# downloaded game archives and PGN files (large)
+*.7z
+*.zip
+*.pgn
+*.pgn.zst
