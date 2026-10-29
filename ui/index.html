@@ -1,0 +1,694 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>chessAI</title>
+<style>
+  :root {
+    --bg: #0f1218; --panel: #171c26; --panel2: #1e2430; --line: #2b3342; --text: #e6e9ef; --muted: #8b94a7;
+    --accent: #4f9cf9; --good: #4cc38a; --bad: #f0616d; --warn: #e9b44c;
+    --light: #e8d9b5; --dark: #a77d52; --last: rgba(233, 180, 76, .55); --sel: rgba(79, 156, 249, .6);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, "Segoe UI", sans-serif; }
+  .app { max-width: 1280px; margin: 0 auto; padding: 16px; display: grid; gap: 16px;
+         grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); align-items: start; }
+  .col { display: grid; gap: 16px; min-width: 0; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; min-width: 0; }
+  h1 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: .02em; }
+  .head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; gap: 8px; flex-wrap: wrap; }
+  .muted { color: var(--muted); }
+  .status { font-size: 12px; color: var(--muted); }
+  .status b { color: var(--text); font-weight: 600; }
+
+  /* board */
+  .board-wrap { width: 100%; max-width: 620px; margin: 0 auto; position: relative; }
+  .board.watch { cursor: pointer; }
+  .board { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); grid-auto-rows: auto; border-radius: 6px; overflow: hidden;
+           border: 2px solid var(--line); user-select: none; }
+  .sq { position: relative; aspect-ratio: 1 / 1; min-width: 0; min-height: 0; overflow: hidden; display: flex; align-items: center; justify-content: center; font-size: clamp(26px, 6vw, 56px);
+        line-height: 1; cursor: default; }
+  .sq.l { background: var(--light); } .sq.d { background: var(--dark); }
+  .sq.last::after { content: ""; position: absolute; inset: 0; background: var(--last); }
+  .sq.sel::after { content: ""; position: absolute; inset: 0; background: var(--sel); }
+  .sq.can { cursor: pointer; }
+  .sq.target::before { content: ""; position: absolute; width: 28%; height: 28%; border-radius: 50%; background: rgba(15, 18, 24, .45); z-index: 2; }
+  .piece { position: relative; z-index: 1; }
+  .piece.ghost { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }   /* captured piece: must not share the square's flex space with the hidden mover */
+  .summary { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(86%, 380px); display: none; z-index: 10;
+             background: var(--panel); border: 1px solid var(--line); border-top: 4px solid var(--accent); border-radius: 12px;
+             padding: 16px 18px; box-shadow: 0 10px 30px rgba(0,0,0,.5); }
+  .summary.on { display: block; }
+  .summary.win { border-top-color: var(--good); } .summary.loss { border-top-color: var(--bad); } .summary.draw { border-top-color: var(--warn); }
+  .summary h2 { margin: 0; font-size: 24px; }
+  .summary.win h2 { color: var(--good); } .summary.loss h2 { color: var(--bad); } .summary.draw h2 { color: var(--warn); }
+  .summary .sub { color: var(--muted); margin: 2px 0 12px; }
+  .summary dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; margin: 0 0 14px; }
+  .summary dt { color: var(--muted); } .summary dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+  .summary .row { display: flex; gap: 8px; align-items: center; justify-content: flex-end; }
+  .summary .hold { color: var(--muted); font-size: 12px; margin-right: auto; }
+  .rec-row { padding: 10px 0; border-top: 1px solid var(--line); border-left: 3px solid transparent; padding-left: 10px; }
+  .rec-row:first-of-type { border-top: none; }
+  .rec-row.active { border-left-color: var(--accent); }
+  .rec-row .title { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+  .rec-row .nums { display: flex; gap: 22px; flex-wrap: wrap; }
+  .rec-row .n b { font-size: 22px; font-variant-numeric: tabular-nums; display: block; line-height: 1.1; }
+  .rec-row .n span { font-size: 11px; color: var(--muted); }
+  .strip { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 8px; }
+  .strip i { width: 10px; height: 14px; border-radius: 2px; border: 1px solid transparent; }
+  .k-win { background: var(--good); } .k-loss { background: var(--bad); } .k-draw { background: var(--warn); }
+  .k-white { background: #f3f3f3; } .k-black { background: #262b36; border-color: var(--muted) !important; }
+  .c-win { color: var(--good); } .c-loss { color: var(--bad); } .c-draw { color: var(--warn); }
+  #netSel { max-width: 360px; }
+  #openingBox { width: 250px; }
+  #openingBox:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(79, 156, 249, .35); }
+  .combo { position: relative; }
+  .combo-list { position: absolute; left: 0; top: calc(100% + 4px); min-width: 100%; width: 440px; max-width: 86vw; max-height: 340px; overflow-y: auto;
+                background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 12px 28px rgba(0, 0, 0, .55);
+                padding: 4px; z-index: 40; display: none; }
+  .combo-list.open { display: block; }
+  .combo-item { display: flex; gap: 10px; align-items: baseline; padding: 6px 10px; border-radius: 6px; cursor: pointer; color: var(--text); }
+  .combo-item .eco { color: var(--muted); font-size: 12px; min-width: 34px; font-variant-numeric: tabular-nums; }
+  .combo-item.active, .combo-item:hover { background: rgba(79, 156, 249, .22); }
+  .combo-item.special { font-weight: 600; }
+  .combo-item mark { background: none; color: var(--accent); font-weight: 600; }
+  .combo-sep { height: 1px; background: var(--line); margin: 4px 6px; }
+  .combo-hint { color: var(--muted); font-size: 12px; padding: 6px 10px; }
+
+  .slider { position: absolute; display: flex; align-items: center; justify-content: center; line-height: 1; pointer-events: none; z-index: 5; }
+  .piece.w { color: #fbfbfb; text-shadow: 0 0 2px #000, 0 0 2px #000, 0 1px 3px #000; }
+  .piece.b { color: #15181f; text-shadow: 0 0 1px rgba(255,255,255,.55); }
+  .coord { position: absolute; font-size: 10px; font-weight: 600; z-index: 3; pointer-events: none; opacity: .75; }
+  .coord.f { right: 3px; bottom: 1px; } .coord.r { left: 3px; top: 1px; }
+  .l .coord { color: var(--dark); } .d .coord { color: var(--light); }
+  .banner { margin-top: 10px; text-align: center; min-height: 20px; color: var(--muted); }
+  .banner b { color: var(--text); }
+
+  /* controls */
+  .controls { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; }
+  .group { display: flex; gap: 4px; align-items: center; }
+  .group > .lbl { color: var(--muted); font-size: 12px; margin-right: 4px; }
+  button, select, input { font: inherit; color: var(--text); background: var(--panel2); border: 1px solid var(--line);
+                          border-radius: 6px; padding: 5px 10px; }
+  button { cursor: pointer; } button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.good.on { background: var(--good); border-color: var(--good); color: #08120d; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 12px; }
+  .stat { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; min-width: 0; }
+  .stat .k { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .stat .v { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  /* tabs */
+  .tabs { display: flex; gap: 4px; margin-bottom: 12px; border-bottom: 1px solid var(--line); }
+  .tab { background: none; border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 6px 12px; color: var(--muted); }
+  .tab.on { color: var(--text); border-bottom-color: var(--accent); background: none; }
+  .pane { display: none; height: 300px; overflow: auto; } .pane.on { display: block; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th { text-align: left; font-weight: 500; color: var(--muted); font-size: 12px; padding: 4px 6px; position: sticky; top: 0; background: var(--panel); }
+  td { padding: 4px 6px; border-top: 1px solid var(--line); }
+  td.num, th.num { text-align: right; }
+  .bar { height: 8px; background: var(--panel2); border-radius: 4px; overflow: hidden; min-width: 60px; }
+  .bar > i { display: block; height: 100%; background: var(--accent); }
+  .evalbar { display: flex; height: 14px; border-radius: 7px; overflow: hidden; margin: 6px 0 12px; border: 1px solid var(--line); }
+  .evalbar .w { background: #f3f3f3; } .evalbar .b { background: #262b36; flex: 1; }
+  .mistake { color: var(--bad); font-weight: 600; }
+  .empty { color: var(--muted); padding: 24px 6px; text-align: center; }
+  .form { display: grid; grid-template-columns: 1fr 110px; gap: 8px 12px; align-items: center; }
+  .form .sect { grid-column: 1 / -1; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; margin-top: 6px; }
+  .form input { width: 100%; text-align: right; }
+  .form .ro { text-align: right; font-variant-numeric: tabular-nums; }
+  .hint { font-size: 12px; color: var(--muted); grid-column: 1 / -1; }
+  .logbar { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; flex-wrap: wrap; }
+  .logbar a { color: var(--accent); text-decoration: none; font-size: 12px; }
+  canvas { width: 100%; height: 220px; display: block; }
+  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin-top: 6px; flex-wrap: wrap; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  .sf { margin-top: 8px; font-size: 12px; color: var(--muted); }
+  .sf table { font-size: 12px; }
+  @media (max-width: 900px) { .app { grid-template-columns: 1fr; } .stats { grid-template-columns: repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="col">
+    <section class="card">
+      <div class="head"><h1>Board <svg id="pauseicon" title="Paused - click the board to resume" viewBox="0 0 16 16" width="16" height="16" style="display:none;vertical-align:-2px;margin-left:6px"><rect x="3" y="2" width="3.5" height="12" rx="1" fill="var(--bad)"/><rect x="9.5" y="2" width="3.5" height="12" rx="1" fill="var(--bad)"/></svg></h1><div class="status" id="status"></div></div>
+      <div class="board-wrap">
+        <div class="board" id="board"></div>
+        <div class="summary" id="summary"></div>
+        <div class="banner" id="openingName" style="margin-top: 8px; min-height: 0"></div>
+        <div class="banner" id="banner"></div>
+      </div>
+    </section>
+    <section class="card">
+      <div class="controls">
+        <div class="group"><span class="lbl">Net</span><select id="netSel" title="Which saved net plays. Switching loads it; its training progress is saved in its own folder, other nets are never overwritten."></select></div>
+        <div class="group"><span class="lbl">Opening</span><div class="combo"><input id="openingBox" autocomplete="off" spellcheck="false" role="combobox" aria-expanded="false" placeholder="none - click to choose or type to search" title="Pick an opening to start every new game from, type to search the list, or choose Random. Choosing one starts a new game."><div class="combo-list" id="openingMenu" role="listbox"></div></div><button id="openingRandom" title="Start a new game from a random opening">Random</button></div>
+        <div class="group"><span class="lbl">Mode</span>
+          <button data-mode="selfplay">Watch</button><button data-mode="play">Play</button></div>
+        <div class="group" id="colorGroup"><span class="lbl">You are</span>
+          <button data-color="white">White</button><button data-color="black">Black</button></div>
+        <div class="group" id="speedGroup"><span class="lbl">Speed</span>
+          <button data-speed="1">x1</button><button data-speed="4">x4</button>
+          <button data-speed="16">x16</button><button data-speed="64">x64</button></div>
+        <div class="group"><button id="learn" class="good">Learning</button></div>
+        <div class="group"><button id="sumBtn" class="good" title="Show a victory / defeat card with a game summary when a game ends">Summary</button></div>
+        <div class="group"><button id="newGame">New Game</button></div>
+      </div>
+      <div class="stats">
+        <div class="stat"><div class="k" id="kWin">% of game wins</div><div class="v" id="vWin">-</div></div>
+        <div class="stat" title=""><div class="k" id="kMis"># Mistakes (W / B)</div><div class="v" id="vMis">-</div></div>
+        <div class="stat"><div class="k">How many moves</div><div class="v" id="vMoves">0</div></div>
+        <div class="stat"><div class="k">Run time</div><div class="v" id="vTime">00:00:00</div></div>
+      </div>
+    </section>
+    <section class="card">
+      <div class="head"><h1 id="recTitle">Record</h1><span class="status" id="recNote">this net only</span></div>
+      <div id="rec"></div>
+    </section>
+  </div>
+
+  <div class="col">
+    <section class="card">
+      <div class="tabs">
+        <button class="tab on" data-tab="cand">Candidate moves</button>
+        <button class="tab" data-tab="settings">Training settings</button>
+        <button class="tab" data-tab="log">Move log</button>
+      </div>
+      <div class="pane on" id="pane-cand"></div>
+      <div class="pane" id="pane-settings">
+        <div class="form" id="form">
+          <div class="sect">Set by you (applies right away)</div>
+          <label for="s_simulations">Search simulations per move</label><input id="s_simulations" type="number" min="1" max="2000" step="1">
+          <label for="s_train_steps">Training steps after each game</label><input id="s_train_steps" type="number" min="1" step="1">
+          <label for="s_batch_size">Batch size</label><input id="s_batch_size" type="number" min="8" step="8">
+          <label for="s_lr">Learning rate</label><input id="s_lr" type="number" min="0.000001" max="1" step="0.0001">
+          <label for="s_arena_every">Gate every N games</label><input id="s_arena_every" type="number" min="1" step="1">
+          <label for="s_arena_games">Gate match games</label><input id="s_arena_games" type="number" min="2" step="2">
+          <label for="s_gate">Score needed to replace best net</label><input id="s_gate" type="number" min="0" max="1" step="0.05">
+          <div class="sect">Fixed for this run</div>
+          <div id="ro" style="display:contents"></div>
+          <div class="hint">Learning only happens in Watch mode. In Play mode the net just plays you.</div>
+        </div>
+      </div>
+      <div class="pane" id="pane-log">
+        <div class="logbar">
+          <select id="logGame"></select>
+          <a href="/api/games.csv">Download CSV</a><a href="/api/games.json">Download JSON</a>
+          <span class="muted" style="font-size:12px">All finished games are also saved to runs/ui/games.jsonl</span>
+        </div>
+        <div id="logBody"></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="head"><h1>Learning curve</h1><span class="status" id="curveNote"></span></div>
+      <canvas id="chart"></canvas>
+      <div class="legend">
+        <span><i style="background:var(--warn)"></i>training loss (left axis)</span>
+        <span><i style="background:var(--good)"></i>arena score, new net vs best (right axis, 50% = equal)</span>
+      </div>
+      <div class="sf" id="sf"></div>
+    </section>
+  </div>
+</div>
+
+<script>
+const GLYPH = { k: "♚", q: "♛", r: "♜", b: "♝", n: "♞", p: "♟" };
+const $ = (id) => document.getElementById(id);
+let S = null, selected = null, activeTab = "cand", logCache = {};
+
+async function post(body) {
+  try {
+    const r = await fetch("/api/cmd", { method: "POST", body: JSON.stringify(body) });
+    const j = await r.json();
+    if (!j.ok) console.warn(j.error);
+    return j;
+  } catch (e) { console.warn(e); }
+}
+const setSetting = (values) => { post({ type: "settings", values }); Object.assign(S.settings, values); render(); };
+
+/* ---------- board ---------- */
+function parseFen(fen) {
+  const rows = fen.split(" ")[0].split("/"), grid = [];
+  for (const row of rows) {
+    const out = [];
+    for (const ch of row) {
+      if (/\d/.test(ch)) for (let i = 0; i < +ch; i++) out.push(null);
+      else out.push(ch);
+    }
+    grid.push(out);
+  }
+  return grid; // grid[0] is rank 8
+}
+function drawBoard() {
+  const g = S.game, grid = parseFen(view.fen);
+  const flip = g.mode === "play" && g.human === "black";
+  const sqName = (r, f) => "abcdefgh"[f] + (8 - r);
+  const last = view.last ? [view.last.slice(0, 2), view.last.slice(2, 4)] : [];
+  const mine = g.mode === "play" && !g.result && g.turn === g.human && view.ply === g.ply;
+  const targets = selected && S.legal[selected] ? S.legal[selected] : [];
+  const el = $("board"), frag = document.createDocumentFragment();
+  for (let i = 0; i < 64; i++) {
+    let r = Math.floor(i / 8), f = i % 8;
+    if (flip) { r = 7 - r; f = 7 - f; }
+    const name = sqName(r, f), piece = grid[r][f];
+    const d = document.createElement("div");
+    d.className = "sq " + ((r + f) % 2 === 0 ? "l" : "d");
+    d.dataset.sq = name;
+    if (last.includes(name)) d.classList.add("last");
+    if (name === selected) d.classList.add("sel");
+    if (targets.includes(name)) d.classList.add("target");
+    if (mine && (S.legal[name] || targets.includes(name))) d.classList.add("can");
+    if (piece) {
+      const p = document.createElement("span");
+      p.className = "piece " + (piece === piece.toUpperCase() ? "w" : "b");
+      p.textContent = GLYPH[piece.toLowerCase()] + "︎";
+      d.appendChild(p);
+    }
+    if (i >= 56) { const c = document.createElement("span"); c.className = "coord f"; c.textContent = "abcdefgh"[f]; d.appendChild(c); }
+    if (i % 8 === 0) { const c = document.createElement("span"); c.className = "coord r"; c.textContent = 8 - r; d.appendChild(c); }
+    d.onclick = () => clickSquare(name, mine);
+    frag.appendChild(d);
+  }
+  el.replaceChildren(frag);
+}
+function clickSquare(name, mine) {
+  if (S.game.mode !== "play") { setSetting({ paused: !S.settings.paused }); return; }   // Watch mode: click = pause / resume
+  if (!mine) return;
+  if (selected && (S.legal[selected] || []).includes(name)) {
+    post({ type: "move", uci: selected + name });
+    selected = null;
+  } else {
+    selected = S.legal[name] ? name : null;
+  }
+  updateBoard();
+}
+
+/* ---------- board redraw + piece sliding ---------- */
+// The board shows `view`, which trails the server by however many moves are still sliding. Moves are
+// replayed one at a time at a constant speed, so a long move simply takes longer and always lands fully.
+let view = null, lastKey = "", anim = null;
+const SQUARES_PER_SEC = 3;   // slide speed at x1: a 3-square move takes 1 second
+function boardKey() {
+  const g = S.game;
+  return [view.id, view.fen, view.last, selected, g.mode === "play" && g.human === "black", (S.legal[selected] || []).join(), view.ply === g.ply].join("|");
+}
+function redraw() {
+  const key = boardKey();
+  if (key === lastKey) return;
+  lastKey = key;
+  drawBoard();
+}
+function updateBoard() {
+  const g = S.game;
+  if (anim && view && view.id === g.id && view.ply <= g.ply) return;   // let the slide finish; it calls us again when done
+  if (anim) { anim.cancel(); anim = null; }
+  if (!view || view.id !== g.id || view.ply > g.ply) {                 // first load, new game, or a reset: no animation
+    view = { id: g.id, ply: g.ply, fen: g.fen, last: g.last };
+    lastKey = ""; redraw(); drawSummary(); return;
+  }
+  while (view.ply < g.ply) {
+    const m = g.moves[view.ply], before = parseFen(view.fen);
+    view = { id: g.id, ply: view.ply + 1, fen: m.fen, last: m.uci };
+    if (g.mode === "play" && m.by === "human") continue;               // your own move shows at once
+    lastKey = ""; redraw();
+    slide(m.uci, before, g.ply - view.ply + 1);
+    return;
+  }
+  redraw();
+  drawSummary();
+}
+function slide(uci, before, backlog) {
+  const from = uci.slice(0, 2), to = uci.slice(2, 4), board = $("board");
+  const a = board.querySelector(`[data-sq="${from}"]`), b = board.querySelector(`[data-sq="${to}"]`);
+  const piece = b && b.querySelector(".piece");
+  if (!a || !piece) { updateBoard(); return; }
+  const wrap = board.parentElement, wr = wrap.getBoundingClientRect(), ar = a.getBoundingClientRect(), br = b.getBoundingClientRect();
+  const clone = document.createElement("div");
+  clone.className = "slider";
+  clone.appendChild(piece.cloneNode(true));
+  Object.assign(clone.style, { left: br.left - wr.left + "px", top: br.top - wr.top + "px", width: br.width + "px",
+                               height: br.height + "px", fontSize: getComputedStyle(b).fontSize });
+  wrap.appendChild(clone);
+  piece.style.visibility = "hidden";
+  const taken = before["87654321".indexOf(to[1])]["abcdefgh".indexOf(to[0])];   // a captured piece stays until the slide lands
+  let ghost = null;
+  if (taken) {
+    ghost = document.createElement("span");
+    ghost.className = "piece ghost " + (taken === taken.toUpperCase() ? "w" : "b");
+    ghost.textContent = GLYPH[taken.toLowerCase()] + "︎";
+    b.appendChild(ghost);
+  }
+  const dx = ar.left - br.left, dy = ar.top - br.top, squares = Math.hypot(dx, dy) / br.width;
+  const speedUp = S.game.mode === "play" ? 1 : S.settings.speed;                    // x4, x16, x64 play it faster
+  const ms = Math.max(20, (squares / SQUARES_PER_SEC) * 1000 / speedUp / Math.max(backlog, 1));   // catch up if moves are queued
+  const run = clone.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "translate(0, 0)" }],
+                            { duration: ms, easing: "linear", fill: "both" });
+  const done = () => { clone.remove(); piece.style.visibility = ""; if (ghost) ghost.remove(); };
+  anim = { cancel() { run.cancel(); done(); } };
+  run.onfinish = () => { done(); anim = null; updateBoard(); };
+}
+
+
+/* ---------- game summary card ---------- */
+let dismissed = null;   // id of the game whose summary was closed
+const PIECE_VALUE = { p: 1, n: 3, b: 3, r: 5, q: 9 };
+function drawSummary() {
+  const el = $("summary"), g = S.game;
+  const show = S.settings.summary && g.result && dismissed !== g.id && view && view.id === g.id && view.ply === g.ply && !anim;
+  if (!show) { el.classList.remove("on"); el.innerHTML = ""; return; }
+  const play = g.mode === "play", wWin = g.result === "1-0", bWin = g.result === "0-1", draw = !wWin && !bWin;
+  const won = (g.human === "white" && wWin) || (g.human === "black" && bWin);
+  let title, cls;
+  if (play) { title = draw ? "Draw" : won ? "Victory" : "Defeat"; cls = draw ? "draw" : won ? "win" : "loss"; }
+  else { title = draw ? "Draw" : wWin ? "White wins" : "Black wins"; cls = draw ? "draw" : "win"; }
+  const reason = g.reason ? g.reason.charAt(0).toUpperCase() + g.reason.slice(1) : "";
+  const sub = draw ? "Drawn: " + (g.reason || "") : `${wWin ? "White" : "Black"} won by ${g.reason}`;
+  const caps = { white: 0, black: 0 }; g.moves.forEach((m) => { if (m.san.includes("x")) caps[m.side]++; });
+  const mat = { w: 0, b: 0 };
+  for (const row of parseFen(g.fen)) for (const c of row) if (c && PIECE_VALUE[c.toLowerCase()]) mat[c === c.toUpperCase() ? "w" : "b"] += PIECE_VALUE[c.toLowerCase()];
+  const worst = g.moves.filter((m) => m.drop != null).sort((a, b) => b.drop - a.drop)[0];
+  const worstText = worst && worst.drop > S.info.mistake_drop
+    ? `${worst.san} (move ${Math.ceil(worst.ply / 2)}, ${worst.side}) lost ${worst.drop.toFixed(2)}` : "none flagged";
+  const lastOp = openingAt(g.moves, g.moves.length), opName = lastOp ? esc(lastOp.eco + " " + lastOp.name) : "none named";
+  const hold = S.game.hold_left > 0 ? `Next game in ${Math.ceil(S.game.hold_left)}s` : "";
+  el.className = "summary on " + cls;
+  el.innerHTML = `<h2>${title}</h2><div class="sub">${sub}</div>
+    <dl><dt>Moves played</dt><dd>${Math.ceil(g.moves.length / 2)}</dd>
+        <dt>Captures (W / B)</dt><dd>${caps.white} / ${caps.black}</dd>
+        <dt>Material left (W / B)</dt><dd>${mat.w} / ${mat.b}</dd>
+        <dt>Mistakes (W / B)</dt><dd>${g.mistakes.white} / ${g.mistakes.black}</dd>
+        <dt>Biggest mistake</dt><dd>${worstText}</dd>
+        <dt>Opening</dt><dd>${opName}</dd></dl>
+    <div class="row"><span class="hold">${hold}</span>${play ? '<button id="sumNew">New Game</button>' : ""}<button id="sumOk" class="on">Continue</button></div>`;
+  $("sumOk").onclick = () => { dismissed = g.id; post({ type: "ack" }); drawSummary(); };
+  if (play) $("sumNew").onclick = () => { dismissed = g.id; post({ type: "new_game" }); drawSummary(); };
+}
+
+
+/* ---------- openings ---------- */
+const OPENING_NONE = "No opening (start from the beginning)", OPENING_RANDOM = "Random opening";
+const SHOW_MAX = 60;
+let openingList = [], menuItems = [], menuActive = 0, typed = false;
+async function loadOpenings() {
+  try { openingList = await (await fetch("/api/openings")).json(); } catch (e) { return; }
+  openingList.sort((a, b) => b.games - a.games || a.id.localeCompare(b.id));   // mainstream lines first
+}
+const openingText = (id) => (id === "none" ? "" : id === "random" ? OPENING_RANDOM : id);
+function filterOpenings(query) {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  return openingList.filter((o) => words.every((w) => o.id.toLowerCase().includes(w)));
+}
+function highlight(text, query) {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  let out = esc(text);
+  for (const w of words) out = out.replace(new RegExp("(" + esc(w).replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ")", "ig"), "<mark>$1</mark>");
+  return out;
+}
+function openMenu(query) {
+  const menu = $("openingMenu"), box = $("openingBox");
+  const found = filterOpenings(query), shown = found.slice(0, SHOW_MAX);
+  menuItems = [];
+  const parts = [];
+  const add = (id, html, cls, eco) => { menuItems.push(id); parts.push(`<div class="combo-item ${cls}" role="option" data-i="${menuItems.length - 1}"><span class="eco">${eco}</span><span>${html}</span></div>`); };
+  const q = query.toLowerCase().trim();
+  if (!q || OPENING_RANDOM.toLowerCase().includes(q)) add("random", OPENING_RANDOM, "special", "\u{1F3B2}");
+  if (!q || "no opening none".includes(q)) add("none", OPENING_NONE, "special", "\u2014");
+  if (parts.length && shown.length) parts.push('<div class="combo-sep"></div>');
+  for (const o of shown) add(o.id, highlight(o.name, query), "", esc(o.eco));
+  if (found.length > shown.length) parts.push(`<div class="combo-hint">${found.length - shown.length} more: keep typing to narrow the list</div>`);
+  if (!menuItems.length) parts.push('<div class="combo-hint">No opening matches that</div>');
+  menu.innerHTML = parts.join("");
+  menu.classList.add("open"); box.setAttribute("aria-expanded", "true");
+  setActive(0);
+}
+function closeMenu() { $("openingMenu").classList.remove("open"); $("openingBox").setAttribute("aria-expanded", "false"); typed = false; }
+function setActive(i) {
+  menuActive = Math.max(0, Math.min(i, menuItems.length - 1));
+  document.querySelectorAll("#openingMenu .combo-item").forEach((el) => el.classList.toggle("active", +el.dataset.i === menuActive));
+  const el = document.querySelector(`#openingMenu .combo-item[data-i="${menuActive}"]`);
+  if (el) el.scrollIntoView({ block: "nearest" });
+}
+function chooseOpening(id) {
+  closeMenu();
+  setSetting({ opening: id });   // first, so the box shows the new choice when it loses focus
+  $("openingBox").blur();
+}
+const box = $("openingBox");
+box.addEventListener("focus", () => { box.select(); openMenu(""); });
+box.addEventListener("click", () => { if (!$("openingMenu").classList.contains("open")) openMenu(""); });
+box.addEventListener("input", () => { typed = true; openMenu(box.value); });
+box.addEventListener("keydown", (e) => {
+  const open = $("openingMenu").classList.contains("open");
+  if (e.key === "ArrowDown") { e.preventDefault(); open ? setActive(menuActive + 1) : openMenu(typed ? box.value : ""); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); setActive(menuActive - 1); }
+  else if (e.key === "Enter") { e.preventDefault(); if (open && menuItems.length) chooseOpening(menuItems[menuActive]); }
+  else if (e.key === "Escape") { closeMenu(); box.value = openingText(S.settings.opening); box.blur(); }
+  else if (e.key === "Tab") closeMenu();
+});
+box.addEventListener("blur", () => { closeMenu(); box.value = openingText(S.settings.opening); });
+$("openingMenu").addEventListener("mousedown", (e) => {   // mousedown, so the box does not lose focus (and close the menu) first
+  e.preventDefault();
+  const el = e.target.closest(".combo-item");
+  if (el) chooseOpening(menuItems[+el.dataset.i]);
+});
+$("openingRandom").onclick = () => { if (S.settings.opening === "random") post({ type: "new_game" }); else setSetting({ opening: "random" }); };
+function openingAt(moves, count) {   // the last named position among the first `count` moves
+  let op = null;
+  for (let i = 0; i < Math.min(count, moves.length); i++) if (moves[i].op) op = moves[i].op;
+  return op;
+}
+function drawOpeningName() {
+  const g = S.game, op = view ? openingAt(g.moves, view.ply) : null;
+  $("openingName").innerHTML = op ? `<b>${esc(op.eco)}</b> &middot; ${esc(op.name)}` : (g.moves.length ? '<span class="muted">No named opening</span>' : "");
+  const box = $("openingBox");
+  if (document.activeElement !== box) box.value = openingText(S.settings.opening);
+}
+
+/* ---------- net picker ---------- */
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+let nets = [], netsFetched = 0;
+async function refreshNets(force) {
+  if (!force && Date.now() - netsFetched < 5000) return;
+  netsFetched = Date.now();
+  try { nets = await (await fetch("/api/nets")).json(); } catch (e) { /* keep the old list */ }
+  drawNetSelect();
+}
+function drawNetSelect() {
+  if (!S) return;
+  const sel = $("netSel"), active = S.net.source;
+  let list = nets;
+  if (!nets.some((n) => n.path === active)) list = [{ path: active, label: S.net.name + "  (current, not in the list)", group: "Current" }, ...nets];
+  const sig = list.map((n) => n.group + "|" + n.path + "|" + n.label).join("\n");
+  if (sel.dataset.sig !== sig) {
+    const groups = [];
+    for (const n of list) {
+      let g = groups.find((x) => x.name === n.group);
+      if (!g) { g = { name: n.group, items: [] }; groups.push(g); }
+      g.items.push(n);
+    }
+    sel.replaceChildren(...groups.map((g) => {
+      const og = document.createElement("optgroup");
+      og.label = g.name;
+      og.append(...g.items.map((n) => { const o = document.createElement("option"); o.value = n.path; o.textContent = n.label; return o; }));
+      return og;
+    }));
+    sel.dataset.sig = sig;
+  }
+  if (document.activeElement !== sel) sel.value = active;   // do not fight the user while the list is open
+  const cur = sel.options[sel.selectedIndex];
+  if (cur) sel.title = cur.textContent;                      // the closed box clips long descriptions
+}
+$("netSel").addEventListener("mousedown", () => { refreshNets(true); setTimeout(() => refreshNets(true), 1500); });   // the server rescans in the background
+$("netSel").addEventListener("change", async (e) => {
+  const path = e.target.value;
+  e.target.blur();
+  const j = await post({ type: "load_net", path });
+  if (j && !j.ok) { alert("Could not load that net: " + j.error); drawNetSelect(); }
+  logCache = {}; dismissed = null;
+});
+
+/* ---------- win / draw / loss record ---------- */
+function drawRecord() {
+  const R = S.record, play = S.game.mode === "play";
+  $("recTitle").textContent = "Record: " + S.net.name;
+  const row = (title, active, items, recent, note) => {
+    const total = items.reduce((a, i) => a + i.n, 0);
+    return `<div class="rec-row${active ? " active" : ""}"><div class="title"><span>${title}</span><span>${total} game${total === 1 ? "" : "s"}${note}</span></div>
+      <div class="nums">${items.map((i) => `<div class="n"><b class="${i.c}">${i.n}</b><span>${i.label}</span></div>`).join("")}</div>
+      <div class="strip" title="Most recent games, oldest on the left">${recent.map((k) => `<i class="k-${k}"></i>`).join("")}</div></div>`;
+  };
+  const p = R.counts.play, s = R.counts.selfplay, pt = p.win + p.draw + p.loss;
+  $("rec").innerHTML =
+    row("You vs AI", play, [{ n: p.win, label: "your wins", c: "c-win" }, { n: p.draw, label: "draws", c: "c-draw" }, { n: p.loss, label: "your losses", c: "c-loss" }],
+        R.recent.play, pt ? ` · you win ${Math.round((100 * p.win) / pt)}%` : "") +
+    row("AI self-play", !play, [{ n: s.white, label: "White wins", c: "" }, { n: s.draw, label: "draws", c: "c-draw" }, { n: s.black, label: "Black wins", c: "" }],
+        R.recent.selfplay, "");
+}
+
+/* ---------- panes ---------- */
+const pct = (x) => (x == null ? "-" : (x * 100).toFixed(0) + "%");
+function drawCandidates() {
+  const el = $("pane-cand");
+  if (!S.candidates.length) { el.innerHTML = '<div class="empty">No search yet. Candidates appear once the AI has thought about a move.</div>'; return; }
+  const w = S.eval_white == null ? 0.5 : (S.eval_white + 1) / 2;
+  let h = `<div class="muted" style="font-size:12px">AI's last estimate (expected score): White ${(w * 100).toFixed(0)}% / Black ${((1 - w) * 100).toFixed(0)}%</div>
+    <div class="evalbar"><div class="w" style="width:${w * 100}%"></div><div class="b"></div></div>
+    <table><tr><th>Move</th><th>Search share</th><th></th><th class="num">Expected score</th><th class="num">Net prior</th></tr>`;
+  for (const c of S.candidates)
+    h += `<tr><td><b>${c.san}</b></td><td class="num">${(c.share * 100).toFixed(0)}%</td>
+      <td style="width:35%"><div class="bar"><i style="width:${c.share * 100}%"></i></div></td>
+      <td class="num">${((c.q + 1) * 50).toFixed(0)}%</td><td class="num">${(c.prior * 100).toFixed(0)}%</td></tr>`;
+  el.innerHTML = h + `</table><div class="hint muted" style="margin-top:8px;font-size:12px">Search share = how often the search chose this move out of the ${S.settings.simulations} simulations. Expected score is for the side to move (50% = even).</div>`;
+}
+const FORM = ["simulations", "train_steps", "batch_size", "lr", "arena_every", "arena_games", "gate"];
+function buildForm() {
+  for (const k of FORM) $("s_" + k).addEventListener("change", (e) => {
+    const v = parseFloat(e.target.value);
+    if (!Number.isNaN(v)) setSetting({ [k]: v });
+  });
+}
+function drawSettings() {
+  for (const k of FORM) { const i = $("s_" + k); if (document.activeElement !== i) i.value = S.settings[k]; }
+  const i = S.info, rows = [
+    ["Device", i.device], ["Network", `${i.blocks} blocks x ${i.channels} channels`], ["Parameters", i.params.toLocaleString()],
+    ["Leaves per search step", i.leaves], ["Replay buffer (positions)", i.buffer.toLocaleString()],
+    ["Times the best net was replaced", i.promotions], ["Games this session", i.games_played],
+    ["Mistake = value drop over", i.mistake_drop]];
+  $("ro").innerHTML = rows.map(([a, b]) => `<div>${a}</div><div class="ro">${b}</div>`).join("");
+}
+async function drawLog() {
+  const sel = $("logGame"), ids = [S.game.id, ...S.games.map((g) => g.id)].filter((v, i, a) => a.indexOf(v) === i).sort((a, b) => b - a);
+  if (sel.dataset.ids !== ids.join(",") || sel.dataset.cur !== String(S.game.id)) {
+    const keep = sel.value;
+    sel.innerHTML = ids.map((id) => {
+      const g = S.games.find((x) => x.id === id);
+      return `<option value="${id}">Game ${id}${id === S.game.id && !S.game.result ? " (live)" : g ? " - " + g.result : ""}</option>`;
+    }).join("");
+    if (keep && ids.includes(+keep)) sel.value = keep;
+    sel.dataset.ids = ids.join(","); sel.dataset.cur = S.game.id;
+  }
+  const id = +sel.value || S.game.id;
+  let moves;
+  if (id === S.game.id) moves = S.game.moves;
+  else {
+    if (!logCache[id]) { const r = await fetch("/api/game?id=" + id); if (r.ok) logCache[id] = await r.json(); }
+    moves = logCache[id] || [];
+  }
+  if (!moves.length) { $("logBody").innerHTML = '<div class="empty">No moves yet.</div>'; return; }
+  const f = (x) => (x == null ? "-" : x.toFixed(2));
+  $("logBody").innerHTML = `<table><tr><th class="num">#</th><th>Side</th><th>By</th><th>Move</th>
+    <th class="num" title="Value of the position for the mover before the move (-1..1)">Value before</th>
+    <th class="num" title="Share of search visits this move got">Share</th><th class="num" title="Value lost by this move">Drop</th></tr>` +
+    moves.map((m) => `<tr><td class="num">${m.ply}</td><td>${m.side}</td><td>${m.by}</td><td><b>${m.san}</b></td>
+      <td class="num">${f(m.e)}</td><td class="num">${m.share == null ? "-" : (m.share * 100).toFixed(0) + "%"}</td>
+      <td class="num ${m.drop > S.info.mistake_drop ? "mistake" : ""}">${f(m.drop)}${m.drop > S.info.mistake_drop ? " !" : ""}</td></tr>`).join("") + "</table>";
+  if (id === S.game.id) $("pane-log").scrollTop = $("pane-log").scrollHeight;
+}
+
+/* ---------- chart ---------- */
+function drawChart() {
+  const cv = $("chart"), dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  cv.width = W * dpr; cv.height = H * dpr;
+  const c = cv.getContext("2d"); c.scale(dpr, dpr); c.clearRect(0, 0, W, H);
+  const css = getComputedStyle(document.documentElement), col = (n) => css.getPropertyValue(n).trim();
+  const pts = S.curve, L = 44, R = 40, T = 10, B = 22, w = W - L - R, h = H - T - B;
+  c.font = "11px system-ui"; c.fillStyle = col("--muted"); c.strokeStyle = col("--line");
+  if (!pts.length) {
+    c.textAlign = "center"; c.fillText("Nothing to plot yet. Keep Learning on in Watch mode and let a few games finish.", W / 2, H / 2);
+    $("curveNote").textContent = ""; return;
+  }
+  const n = pts.length, x = (i) => L + (n === 1 ? w / 2 : (i / (n - 1)) * w);
+  const loss = pts.map((p) => p.loss), lo = Math.min(...loss), hi = Math.max(...loss), pad = (hi - lo) * 0.1 || 0.1;
+  const y0 = lo - pad, y1 = hi + pad, yl = (v) => T + h - ((v - y0) / (y1 - y0)) * h, yr = (v) => T + h - v * h;
+  c.lineWidth = 1;
+  for (let k = 0; k <= 4; k++) {
+    const gy = T + (h * k) / 4; c.beginPath(); c.moveTo(L, gy); c.lineTo(L + w, gy); c.stroke();
+    c.textAlign = "right"; c.fillText((y1 - ((y1 - y0) * k) / 4).toFixed(2), L - 6, gy + 4);
+    c.textAlign = "left"; c.fillText((100 - 25 * k) + "%", L + w + 6, gy + 4);
+  }
+  c.textAlign = "center"; c.fillText("training rounds (one per finished game)", L + w / 2, H - 4);
+  c.strokeStyle = col("--warn"); c.lineWidth = 2; c.beginPath();
+  pts.forEach((p, i) => (i ? c.lineTo(x(i), yl(p.loss)) : c.moveTo(x(i), yl(p.loss)))); c.stroke();
+  c.strokeStyle = col("--good"); c.fillStyle = col("--good"); c.beginPath(); let started = false;
+  pts.forEach((p, i) => { if (p.arena_score == null) return; const px = x(i), py = yr(p.arena_score);
+    started ? c.lineTo(px, py) : c.moveTo(px, py); started = true; }); c.stroke();
+  pts.forEach((p, i) => { if (p.arena_score == null) return; c.beginPath(); c.arc(x(i), yr(p.arena_score), p.promoted ? 5 : 3, 0, 7); c.fill(); });
+  const last = pts[n - 1];
+  $("curveNote").textContent = `${n} rounds, last loss ${last.loss.toFixed(2)}`;
+}
+function drawStockfish() {
+  const rows = S.stockfish, el = $("sf");
+  if (!rows.length) { el.textContent = "No Stockfish results yet. Run evaluate.py on a saved checkpoint (runs/ui/best.pt or latest.pt); results appear here."; return; }
+  const elo = (r) => (r.est_elo ? `~${Math.round(r.est_elo)}${r.margin ? " ±" + r.margin : ""}` : "-");
+  el.innerHTML = `<table><tr><th>Opponent</th><th>Net</th><th class="num">Games</th><th class="num">Score</th><th class="num">Est. Elo</th></tr>` +
+    rows.map((r) => `<tr><td>${r.opponent}</td><td>${r.checkpoint}</td><td class="num">${r.games}</td><td class="num">${(r.score * 100).toFixed(0)}%</td><td class="num">${elo(r)}</td></tr>`).join("") +
+    `</table><div style="margin-top:6px">From results/results.csv. Score counts wins as 1 and draws as 0.5; with few games the margin is large.</div>`;
+}
+
+/* ---------- top-level render ---------- */
+function render() {
+  if (!S) return;
+  const g = S.game, s = S.settings, play = g.mode === "play";
+  $("status").innerHTML = `${esc(S.net.name)} &middot; Game ${g.id} &middot; ${play ? "you vs AI" : "AI vs AI"} &middot; <b>${S.status}</b>`;
+  document.querySelectorAll("[data-mode]").forEach((b) => b.classList.toggle("on", b.dataset.mode === s.mode));
+  document.querySelectorAll("[data-color]").forEach((b) => b.classList.toggle("on", b.dataset.color === s.human_color));
+  document.querySelectorAll("[data-speed]").forEach((b) => { b.classList.toggle("on", +b.dataset.speed === s.speed); b.disabled = play; });
+  $("colorGroup").style.display = s.mode === "play" ? "" : "none";
+  const L = $("learn"); L.textContent = "Learning " + (s.learning ? "ON" : "OFF"); L.classList.toggle("on", s.learning); L.disabled = play;
+  const SB = $("sumBtn"); SB.textContent = "Summary " + (s.summary ? "ON" : "OFF"); SB.classList.toggle("on", s.summary);
+  $("speedGroup").title = play ? "Speed applies to Watch mode" : "";
+  L.title = play ? "Learning happens in Watch mode" : "";
+  $("kWin").textContent = "% of game wins"; $("kWin").title = S.stats.win_label === "arena" ? "Latest gating match: score of the new net against the best net" : "Share of finished games the AI won against you";
+  $("vWin").innerHTML = S.stats.win_pct == null ? "-" : S.stats.win_pct.toFixed(0) + '% <small class="muted" style="font-size:11px;font-weight:400">' + S.stats.win_label + "</small>";
+  $("vMis").textContent = `${S.stats.mistakes.white} / ${S.stats.mistakes.black}`;
+  $("kMis").title = `A move counts as a mistake when the net's value estimate for the mover drops by more than ${S.info.mistake_drop} (scale -1..1).`;
+  $("vMoves").textContent = S.stats.moves; $("vTime").textContent = S.stats.runtime;
+  let msg = "";
+  if (g.result) msg = `Game over: <b>${g.result}</b> (${g.reason}). ` + (play ? "Press <b>New Game</b> to play again." : "Next game starts shortly.");
+  else if (play) msg = g.turn === g.human ? "<b>Your move</b>" : "AI is thinking...";
+  else msg = `${g.turn === "white" ? "White" : "Black"} to move`;
+  const paused = s.paused && !play;
+  $("banner").innerHTML = msg;
+  $("board").classList.toggle("watch", !play);
+  $("pauseicon").style.display = paused ? "inline-block" : "none";
+  if (!(play && g.turn === g.human) || g.result) selected = null;
+  updateBoard();
+  drawSummary();
+  drawRecord();
+  drawNetSelect();
+  drawOpeningName();
+  if (activeTab === "cand") drawCandidates();
+  if (activeTab === "settings") drawSettings();
+  if (activeTab === "log") drawLog();
+  drawChart(); drawStockfish();
+}
+
+/* ---------- wiring ---------- */
+document.querySelectorAll(".tab").forEach((b) => b.onclick = () => {
+  activeTab = b.dataset.tab;
+  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("on", t === b));
+  document.querySelectorAll(".pane").forEach((p) => p.classList.toggle("on", p.id === "pane-" + activeTab));
+  render();
+});
+document.querySelectorAll("[data-mode]").forEach((b) => b.onclick = () => setSetting({ mode: b.dataset.mode }));
+document.querySelectorAll("[data-color]").forEach((b) => b.onclick = () => setSetting({ human_color: b.dataset.color }));
+document.querySelectorAll("[data-speed]").forEach((b) => b.onclick = () => setSetting({ speed: +b.dataset.speed }));
+$("learn").onclick = () => setSetting({ learning: !S.settings.learning });
+$("sumBtn").onclick = () => setSetting({ summary: !S.settings.summary });
+$("newGame").onclick = () => post({ type: "new_game" });
+$("logGame").onchange = () => drawLog();
+window.addEventListener("resize", () => S && drawChart());
+buildForm();
+
+async function poll() {
+  try { S = await (await fetch("/api/state")).json(); render(); }
+  catch (e) { $("status").textContent = "Server not reachable"; }
+}
+poll(); loadOpenings(); refreshNets(true); setInterval(poll, 300); setInterval(() => refreshNets(false), 6000);
+</script>
+</body>
+</html>
